@@ -43,6 +43,13 @@ const AVAILABLE_TOOLS = [
     risk: "medium" as const,
     requiresIntegration: "github",
   },
+  {
+    id: "github_create_repo",
+    name: "GitHub: crear repositorio",
+    description: "Crea un repositorio nuevo en tu cuenta (requiere confirmación).",
+    risk: "medium" as const,
+    requiresIntegration: "github",
+  },
 ];
 
 const RISK_LABELS = {

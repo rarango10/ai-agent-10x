@@ -1,6 +1,19 @@
 import { NextResponse } from "next/server";
-import { createServerClient } from "@agents/db";
-import { runAgent } from "@agents/agent";
+import {
+  createServerClient,
+  getDecryptedGithubToken,
+  getToolCallById,
+  getAgentSessionUserId,
+  updateToolCallStatus,
+} from "@agents/db";
+import { runAgent, executeGithubTool } from "@agents/agent";
+
+const GITHUB_TOOL_NAMES = new Set([
+  "github_list_repos",
+  "github_list_issues",
+  "github_create_issue",
+  "github_create_repo",
+]);
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
@@ -60,6 +73,19 @@ async function answerCallbackQuery(callbackQueryId: string, text: string) {
   });
 }
 
+function formatGithubToolResult(
+  toolName: string,
+  result: Record<string, unknown>
+): string {
+  if (typeof result.issue_url === "string") {
+    return `Issue creado: ${result.issue_url}`;
+  }
+  if (typeof result.html_url === "string") {
+    return `Repositorio creado: ${result.html_url}`;
+  }
+  return `${toolName}: ${JSON.stringify(result).slice(0, 3500)}`;
+}
+
 export async function POST(request: Request) {
   const secret = request.headers.get("x-telegram-bot-api-secret-token");
   if (WEBHOOK_SECRET && secret !== WEBHOOK_SECRET) {
@@ -74,24 +100,80 @@ export async function POST(request: Request) {
     const cb = update.callback_query;
     const [action, toolCallId] = cb.data.split(":");
 
-    if (action === "approve" && toolCallId) {
-      await db
-        .from("tool_calls")
-        .update({ status: "approved" })
-        .eq("id", toolCallId)
-        .eq("status", "pending_confirmation");
-      await answerCallbackQuery(cb.id, "Aprobado");
-      await sendTelegramMessage(cb.message.chat.id, "Acción aprobada. Ejecutando...");
-    } else if (action === "reject" && toolCallId) {
-      await db
-        .from("tool_calls")
-        .update({ status: "rejected" })
-        .eq("id", toolCallId)
-        .eq("status", "pending_confirmation");
-      await answerCallbackQuery(cb.id, "Rechazado");
-      await sendTelegramMessage(cb.message.chat.id, "Acción cancelada.");
+    const { data: tgAccount } = await db
+      .from("telegram_accounts")
+      .select("user_id")
+      .eq("telegram_user_id", cb.from.id)
+      .maybeSingle();
+
+    const linkedUserId = tgAccount?.user_id as string | undefined;
+
+    if (action === "reject" && toolCallId) {
+      if (!linkedUserId) {
+        await answerCallbackQuery(cb.id, "Cuenta no vinculada");
+        return NextResponse.json({ ok: true });
+      }
+      const tc = await getToolCallById(db, toolCallId);
+      const sessionUid = tc ? await getAgentSessionUserId(db, tc.session_id) : null;
+      if (tc?.status === "pending_confirmation" && sessionUid === linkedUserId) {
+        await updateToolCallStatus(db, toolCallId, "rejected");
+        await answerCallbackQuery(cb.id, "Rechazado");
+        await sendTelegramMessage(cb.message.chat.id, "Acción cancelada.");
+      } else {
+        await answerCallbackQuery(cb.id, "No aplicable");
+      }
+      return NextResponse.json({ ok: true });
     }
 
+    if (action === "approve" && toolCallId) {
+      if (!linkedUserId) {
+        await answerCallbackQuery(cb.id, "Cuenta no vinculada");
+        return NextResponse.json({ ok: true });
+      }
+      const tc = await getToolCallById(db, toolCallId);
+      if (!tc || tc.status !== "pending_confirmation") {
+        await answerCallbackQuery(cb.id, "Expirado o inválido");
+        return NextResponse.json({ ok: true });
+      }
+      const sessionUid = await getAgentSessionUserId(db, tc.session_id);
+      if (sessionUid !== linkedUserId) {
+        await answerCallbackQuery(cb.id, "No autorizado");
+        return NextResponse.json({ ok: true });
+      }
+      if (!GITHUB_TOOL_NAMES.has(tc.tool_name)) {
+        await answerCallbackQuery(cb.id, "Herramienta no soportada");
+        return NextResponse.json({ ok: true });
+      }
+
+      const token = await getDecryptedGithubToken(db, linkedUserId);
+      if (!token) {
+        await answerCallbackQuery(cb.id, "Sin GitHub");
+        await sendTelegramMessage(
+          cb.message.chat.id,
+          "No hay conexión con GitHub o el token no es válido. Conecta GitHub en Ajustes en la web."
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      await answerCallbackQuery(cb.id, "Aprobado");
+      const result = await executeGithubTool(tc.tool_name, tc.arguments_json, token);
+      if ("error" in result && result.error) {
+        await updateToolCallStatus(db, toolCallId, "failed", result);
+        await sendTelegramMessage(
+          cb.message.chat.id,
+          `Error al ejecutar: ${String(result.error)}`
+        );
+      } else {
+        await updateToolCallStatus(db, toolCallId, "executed", result);
+        await sendTelegramMessage(
+          cb.message.chat.id,
+          formatGithubToolResult(tc.tool_name, result)
+        );
+      }
+      return NextResponse.json({ ok: true });
+    }
+
+    await answerCallbackQuery(cb.id, "OK");
     return NextResponse.json({ ok: true });
   }
 
@@ -220,9 +302,11 @@ export async function POST(request: Request) {
 
   const { data: integrations } = await db
     .from("user_integrations")
-    .select("*")
+    .select("id,user_id,provider,scopes,status,created_at")
     .eq("user_id", userId)
     .eq("status", "active");
+
+  const githubAccessToken = await getDecryptedGithubToken(db, userId);
 
   try {
     const result = await runAgent({
@@ -246,22 +330,16 @@ export async function POST(request: Request) {
         status: i.status as "active" | "revoked" | "expired",
         created_at: i.created_at as string,
       })),
+      githubAccessToken,
     });
 
-    // Check if response contains a pending confirmation
-    let parsed: Record<string, unknown> | null = null;
-    try {
-      parsed = JSON.parse(result.response);
-    } catch {
-      // not JSON, regular text response
-    }
-
-    if (parsed?.pending_confirmation) {
-      await sendTelegramMessage(chatId, String(parsed.message ?? "Se requiere confirmación."), {
+    if (result.pendingConfirmation) {
+      const p = result.pendingConfirmation;
+      await sendTelegramMessage(chatId, p.message, {
         inline_keyboard: [
           [
-            { text: "Aprobar", callback_data: `approve:${parsed.tool_call_id}` },
-            { text: "Cancelar", callback_data: `reject:${parsed.tool_call_id}` },
+            { text: "Aprobar", callback_data: `approve:${p.toolCallId}` },
+            { text: "Cancelar", callback_data: `reject:${p.toolCallId}` },
           ],
         ],
       });

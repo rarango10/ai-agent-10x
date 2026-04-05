@@ -2,7 +2,12 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { SettingsForm } from "./settings-form";
 
-export default async function SettingsPage() {
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ github?: string; reason?: string }>;
+}) {
+  const sp = await searchParams;
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
@@ -24,6 +29,14 @@ export default async function SettingsPage() {
     .eq("user_id", user.id)
     .single();
 
+  const { data: githubRow } = await supabase
+    .from("user_integrations")
+    .select("id,scopes,created_at")
+    .eq("user_id", user.id)
+    .eq("provider", "github")
+    .eq("status", "active")
+    .maybeSingle();
+
   return (
     <div className="min-h-screen">
       <header className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
@@ -43,6 +56,10 @@ export default async function SettingsPage() {
           profile={profile}
           toolSettings={toolSettings ?? []}
           telegramLinked={!!telegramAccount}
+          githubConnected={!!githubRow}
+          githubScopes={(githubRow?.scopes as string[]) ?? []}
+          githubCallbackStatus={sp.github}
+          githubCallbackReason={sp.reason}
         />
       </main>
     </div>

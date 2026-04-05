@@ -14,10 +14,18 @@ Monorepo con **Next.js**, **Supabase**, **LangGraph** y **OpenRouter**. Incluye 
 
 ## Paso 1 — Clonar e instalar dependencias
 
-```bash
-cd agents
-npm install
-```
+1. Clona el repositorio y entra en su **raíz** (la carpeta que contiene el `package.json` del monorepo).
+
+   ```bash
+   git clone <URL_DEL_REPO> 10x-builders-agent
+   cd 10x-builders-agent
+   ```
+
+2. Instala dependencias desde esa misma raíz (npm instala workspaces de `apps/*` y `packages/*`):
+
+   ```bash
+   npm install
+   ```
 
 ---
 
@@ -63,7 +71,7 @@ Así el flujo de login/signup y el intercambio de código en `/auth/callback` fu
 
 Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la raíz del monorepo.
 
-1. Copia el ejemplo:
+1. Desde la **raíz del repo** (donde está `.env.example`), copia el ejemplo:
 
    ```bash
    cp .env.example apps/web/.env.local
@@ -81,9 +89,18 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `OPENROUTER_API_KEY` | Clave de OpenRouter |
    | `TELEGRAM_BOT_TOKEN` | *(Opcional)* Token del bot |
    | `TELEGRAM_WEBHOOK_SECRET` | *(Opcional)* Secreto que Telegram enviará en cabecera; debe coincidir con el configurado al registrar el webhook |
-   | `OAUTH_ENCRYPTION_KEY` | Reservado para cifrado de tokens OAuth en el futuro; puedes dejar un placeholder hasta integrar proveedores |
+   | `OAUTH_ENCRYPTION_KEY` | Clave **AES-256** para cifrar tokens OAuth en base de datos. Debe ser **64 caracteres hexadecimales** (32 bytes), p. ej. salida de `openssl rand -hex 32` |
+   | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | OAuth App de GitHub (ver abajo) |
+   | `NEXT_PUBLIC_APP_URL` | URL base pública de la app (sin `/` final), p. ej. `http://localhost:3000` — usada para el callback de GitHub |
 
 Referencia de nombres: [.env.example](.env.example).
+
+### GitHub OAuth (integración)
+
+1. En GitHub: **Settings → Developer settings → OAuth Apps → New OAuth App**.
+2. **Authorization callback URL**: `{NEXT_PUBLIC_APP_URL}/api/integrations/github/callback` (ej. `http://localhost:3000/api/integrations/github/callback`).
+3. Copia **Client ID** y genera **Client secret** → `GITHUB_CLIENT_ID` y `GITHUB_CLIENT_SECRET` en `apps/web/.env.local`.
+4. Scopes solicitados por la app: **`repo`** (repos privados, issues y creación de repositorios). El usuario los aprueba al conectar en **Ajustes**.
 
 ---
 

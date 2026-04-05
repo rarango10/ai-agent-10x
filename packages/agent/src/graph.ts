@@ -11,6 +11,12 @@ import { createChatModel } from "./model";
 import { buildLangChainTools } from "./tools/adapters";
 import { getSessionMessages, addMessage } from "@agents/db";
 
+export interface PendingConfirmationPayload {
+  toolCallId: string;
+  toolName: string;
+  message: string;
+}
+
 const GraphState = Annotation.Root({
   messages: Annotation<BaseMessage[]>({
     reducer: (prev, next) => [...prev, ...next],
@@ -19,6 +25,10 @@ const GraphState = Annotation.Root({
   sessionId: Annotation<string>(),
   userId: Annotation<string>(),
   systemPrompt: Annotation<string>(),
+  haltPendingConfirmation: Annotation<PendingConfirmationPayload | null>({
+    reducer: (_prev, next) => next,
+    default: () => null,
+  }),
 });
 
 export interface AgentInput {
@@ -29,17 +39,58 @@ export interface AgentInput {
   db: DbClient;
   enabledTools: UserToolSetting[];
   integrations: UserIntegration[];
+  /** Decrypted GitHub OAuth token; server-only, never sent to the client. */
+  githubAccessToken?: string;
 }
 
 export interface AgentOutput {
   response: string;
   toolCalls: string[];
+  pendingConfirmation?: PendingConfirmationPayload;
 }
 
 const MAX_TOOL_ITERATIONS = 6;
 
+function parsePendingFromToolResult(
+  content: string,
+  toolName: string
+): PendingConfirmationPayload | null {
+  try {
+    const parsed = JSON.parse(content) as {
+      pending_confirmation?: boolean;
+      tool_call_id?: string;
+      message?: string;
+    };
+    if (
+      parsed.pending_confirmation === true &&
+      typeof parsed.tool_call_id === "string"
+    ) {
+      return {
+        toolCallId: parsed.tool_call_id,
+        toolName,
+        message:
+          typeof parsed.message === "string"
+            ? parsed.message
+            : "Se requiere tu confirmación para continuar.",
+      };
+    }
+  } catch {
+    /* not JSON */
+  }
+  return null;
+}
+
 export async function runAgent(input: AgentInput): Promise<AgentOutput> {
-  const { message, userId, sessionId, systemPrompt, db, enabledTools, integrations } = input;
+  const {
+    message,
+    userId,
+    sessionId,
+    systemPrompt,
+    db,
+    enabledTools,
+    integrations,
+    githubAccessToken,
+  } = input;
 
   const model = createChatModel();
   const lcTools = buildLangChainTools({
@@ -48,6 +99,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     sessionId,
     enabledTools,
     integrations,
+    githubAccessToken,
   });
 
   const modelWithTools = lcTools.length > 0 ? model.bindTools(lcTools) : model;
@@ -75,24 +127,40 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   ): Promise<Partial<typeof GraphState.State>> {
     const lastMsg = state.messages[state.messages.length - 1];
     if (!(lastMsg instanceof AIMessage) || !lastMsg.tool_calls?.length) {
-      return {};
+      return { haltPendingConfirmation: null };
     }
 
     const { ToolMessage } = await import("@langchain/core/messages");
     const results: BaseMessage[] = [];
+    let halt: PendingConfirmationPayload | null = null;
+
     for (const tc of lastMsg.tool_calls) {
+      if (halt) break;
+
       const matchingTool = lcTools.find((t) => t.name === tc.name);
       toolCallNames.push(tc.name);
       if (matchingTool) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const result = await (matchingTool as any).invoke(tc.args);
-        results.push(new ToolMessage({ content: String(result), tool_call_id: tc.id! }));
+        const str = String(result);
+        const pending = parsePendingFromToolResult(str, tc.name);
+        if (pending) {
+          halt = pending;
+          results.push(
+            new ToolMessage({ content: str, tool_call_id: tc.id! })
+          );
+          break;
+        }
+        results.push(
+          new ToolMessage({ content: str, tool_call_id: tc.id! })
+        );
       }
     }
-    return { messages: results };
+
+    return { messages: results, haltPendingConfirmation: halt };
   }
 
-  function shouldContinue(state: typeof GraphState.State): string {
+  function shouldContinueFromAgent(state: typeof GraphState.State): string {
     const lastMsg = state.messages[state.messages.length - 1];
     if (lastMsg instanceof AIMessage && lastMsg.tool_calls?.length) {
       const iterations = state.messages.filter(
@@ -104,15 +172,23 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     return "end";
   }
 
+  function shouldContinueFromTools(state: typeof GraphState.State): string {
+    if (state.haltPendingConfirmation) return "end";
+    return "agent";
+  }
+
   const graph = new StateGraph(GraphState)
     .addNode("agent", agentNode)
     .addNode("tools", toolExecutorNode)
     .addEdge("__start__", "agent")
-    .addConditionalEdges("agent", shouldContinue, {
+    .addConditionalEdges("agent", shouldContinueFromAgent, {
       tools: "tools",
       end: "__end__",
     })
-    .addEdge("tools", "agent");
+    .addConditionalEdges("tools", shouldContinueFromTools, {
+      end: "__end__",
+      agent: "agent",
+    });
 
   const checkpointer = new MemorySaver();
   const app = graph.compile({ checkpointer });
@@ -124,17 +200,34 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   ];
 
   const finalState = await app.invoke(
-    { messages: initialMessages, sessionId, userId, systemPrompt },
+    {
+      messages: initialMessages,
+      sessionId,
+      userId,
+      systemPrompt,
+      haltPendingConfirmation: null,
+    },
     { configurable: { thread_id: sessionId } }
   );
 
-  const lastMessage = finalState.messages[finalState.messages.length - 1];
-  const responseText =
-    typeof lastMessage.content === "string"
-      ? lastMessage.content
-      : JSON.stringify(lastMessage.content);
+  const pending = finalState.haltPendingConfirmation ?? undefined;
+
+  let responseText: string;
+  if (pending) {
+    responseText = pending.message;
+  } else {
+    const lastMessage = finalState.messages[finalState.messages.length - 1];
+    responseText =
+      typeof lastMessage.content === "string"
+        ? lastMessage.content
+        : JSON.stringify(lastMessage.content);
+  }
 
   await addMessage(db, sessionId, "assistant", responseText);
 
-  return { response: responseText, toolCalls: toolCallNames };
+  return {
+    response: pending ? "" : responseText,
+    toolCalls: toolCallNames,
+    pendingConfirmation: pending,
+  };
 }

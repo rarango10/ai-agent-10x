@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createServerClient } from "@agents/db";
+import { createServerClient, getDecryptedGithubToken } from "@agents/db";
 import { runAgent } from "@agents/agent";
 
 export async function POST(request: Request) {
@@ -31,9 +31,11 @@ export async function POST(request: Request) {
 
     const { data: integrations } = await supabase
       .from("user_integrations")
-      .select("*")
+      .select("id,user_id,provider,scopes,status,created_at")
       .eq("user_id", user.id)
       .eq("status", "active");
+
+    const githubAccessToken = await getDecryptedGithubToken(db, user.id);
 
     let session = await supabase
       .from("agent_sessions")
@@ -86,15 +88,20 @@ export async function POST(request: Request) {
         status: i.status as "active" | "revoked" | "expired",
         created_at: i.created_at as string,
       })),
+      githubAccessToken,
     });
 
-    const pendingConfirmation = result.response.includes("pending_confirmation")
-      ? JSON.parse(result.response)
-      : null;
+    const pending = result.pendingConfirmation;
 
     return NextResponse.json({
-      response: pendingConfirmation ? null : result.response,
-      pendingConfirmation,
+      response: pending ? null : result.response,
+      pendingConfirmation: pending
+        ? {
+            toolCallId: pending.toolCallId,
+            toolName: pending.toolName,
+            message: pending.message,
+          }
+        : null,
       toolCalls: result.toolCalls,
     });
   } catch (error) {

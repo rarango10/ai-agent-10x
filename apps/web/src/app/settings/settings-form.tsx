@@ -9,6 +9,10 @@ interface Props {
   profile: Record<string, unknown> | null;
   toolSettings: Array<{ tool_id: string; enabled: boolean }>;
   telegramLinked: boolean;
+  githubConnected: boolean;
+  githubScopes: string[];
+  githubCallbackStatus?: string;
+  githubCallbackReason?: string;
 }
 
 const TOOL_IDS = [
@@ -17,9 +21,19 @@ const TOOL_IDS = [
   "github_list_repos",
   "github_list_issues",
   "github_create_issue",
+  "github_create_repo",
 ];
 
-export function SettingsForm({ userId, profile, toolSettings, telegramLinked }: Props) {
+export function SettingsForm({
+  userId,
+  profile,
+  toolSettings,
+  telegramLinked,
+  githubConnected,
+  githubScopes,
+  githubCallbackStatus,
+  githubCallbackReason,
+}: Props) {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -85,6 +99,18 @@ export function SettingsForm({ userId, profile, toolSettings, telegramLinked }: 
 
   return (
     <div className="space-y-8">
+      {githubCallbackStatus === "connected" && (
+        <p className="rounded-md bg-green-50 px-3 py-2 text-sm text-green-800 dark:bg-green-950/40 dark:text-green-200">
+          GitHub conectado correctamente.
+        </p>
+      )}
+      {githubCallbackStatus === "error" && (
+        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950/40 dark:text-red-200">
+          No se pudo conectar GitHub
+          {githubCallbackReason ? ` (${githubCallbackReason})` : ""}.
+        </p>
+      )}
+
       {/* Profile */}
       <section className="space-y-4">
         <h2 className="text-base font-semibold">Perfil</h2>
@@ -141,6 +167,48 @@ export function SettingsForm({ userId, profile, toolSettings, telegramLinked }: 
             </label>
           ))}
         </div>
+      </section>
+
+      {/* GitHub */}
+      <section className="space-y-4">
+        <h2 className="text-base font-semibold">GitHub</h2>
+        {githubConnected ? (
+          <div className="space-y-2">
+            <p className="text-sm text-green-600 dark:text-green-400">
+              Cuenta de GitHub conectada.
+            </p>
+            {githubScopes.length > 0 && (
+              <p className="text-xs text-neutral-500">
+                Permisos: {githubScopes.join(", ")}
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={async () => {
+                await fetch("/api/integrations/github/disconnect", {
+                  method: "POST",
+                });
+                router.refresh();
+              }}
+              className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+            >
+              Desconectar GitHub
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-sm text-neutral-500">
+              Conecta GitHub para que el agente pueda listar repositorios e issues y
+              crear recursos con tu autorización.
+            </p>
+            <a
+              href="/api/integrations/github/authorize"
+              className="inline-block rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
+            >
+              Conectar con GitHub
+            </a>
+          </div>
+        )}
       </section>
 
       {/* Telegram */}

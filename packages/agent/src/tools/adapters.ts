@@ -4,6 +4,7 @@ import type { DbClient } from "@agents/db";
 import type { UserToolSetting, UserIntegration } from "@agents/types";
 import { TOOL_CATALOG, toolRequiresConfirmation } from "./catalog";
 import { createToolCall, updateToolCallStatus } from "@agents/db";
+import { executeGithubTool } from "./execute-github-tool";
 
 interface ToolContext {
   db: DbClient;
@@ -11,12 +12,17 @@ interface ToolContext {
   sessionId: string;
   enabledTools: UserToolSetting[];
   integrations: UserIntegration[];
+  githubAccessToken?: string;
 }
 
-function isToolAvailable(
-  toolId: string,
-  ctx: ToolContext
-): boolean {
+function githubDisconnectedMessage(): string {
+  return JSON.stringify({
+    error:
+      "GitHub no está conectado. Conecta tu cuenta en Ajustes para usar herramientas de GitHub.",
+  });
+}
+
+function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
   const setting = ctx.enabledTools.find((t) => t.tool_id === toolId);
   if (!setting?.enabled) return false;
 
@@ -77,10 +83,21 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async (input) => {
+          if (!ctx.githubAccessToken) {
+            return githubDisconnectedMessage();
+          }
           const record = await createToolCall(
-            ctx.db, ctx.sessionId, "github_list_repos", input, false
+            ctx.db,
+            ctx.sessionId,
+            "github_list_repos",
+            input as Record<string, unknown>,
+            false
           );
-          const result = { message: "GitHub repos would be listed here (stub)", repos: [] };
+          const result = await executeGithubTool(
+            "github_list_repos",
+            input as Record<string, unknown>,
+            ctx.githubAccessToken
+          );
           await updateToolCallStatus(ctx.db, record.id, "executed", result);
           return JSON.stringify(result);
         },
@@ -99,10 +116,21 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async (input) => {
+          if (!ctx.githubAccessToken) {
+            return githubDisconnectedMessage();
+          }
           const record = await createToolCall(
-            ctx.db, ctx.sessionId, "github_list_issues", input, false
+            ctx.db,
+            ctx.sessionId,
+            "github_list_issues",
+            input as Record<string, unknown>,
+            false
           );
-          const result = { message: `Issues for ${input.owner}/${input.repo} (stub)`, issues: [] };
+          const result = await executeGithubTool(
+            "github_list_issues",
+            input as Record<string, unknown>,
+            ctx.githubAccessToken
+          );
           await updateToolCallStatus(ctx.db, record.id, "executed", result);
           return JSON.stringify(result);
         },
@@ -123,18 +151,29 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async (input) => {
+          if (!ctx.githubAccessToken) {
+            return githubDisconnectedMessage();
+          }
           const needsConfirm = toolRequiresConfirmation("github_create_issue");
           const record = await createToolCall(
-            ctx.db, ctx.sessionId, "github_create_issue", input, needsConfirm
+            ctx.db,
+            ctx.sessionId,
+            "github_create_issue",
+            input as Record<string, unknown>,
+            needsConfirm
           );
           if (needsConfirm) {
             return JSON.stringify({
               pending_confirmation: true,
               tool_call_id: record.id,
-              message: `I need your confirmation to create issue "${input.title}" in ${input.owner}/${input.repo}.`,
+              message: `Confirma crear el issue "${(input as { title: string }).title}" en ${(input as { owner: string; repo: string }).owner}/${(input as { owner: string; repo: string }).repo}.`,
             });
           }
-          const result = { message: "Issue created (stub)", issue_url: "#" };
+          const result = await executeGithubTool(
+            "github_create_issue",
+            input as Record<string, unknown>,
+            ctx.githubAccessToken
+          );
           await updateToolCallStatus(ctx.db, record.id, "executed", result);
           return JSON.stringify(result);
         },
@@ -146,6 +185,51 @@ export function buildLangChainTools(ctx: ToolContext) {
             repo: z.string(),
             title: z.string(),
             body: z.string().optional().default(""),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("github_create_repo", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          if (!ctx.githubAccessToken) {
+            return githubDisconnectedMessage();
+          }
+          const needsConfirm = toolRequiresConfirmation("github_create_repo");
+          const record = await createToolCall(
+            ctx.db,
+            ctx.sessionId,
+            "github_create_repo",
+            input as Record<string, unknown>,
+            needsConfirm
+          );
+          if (needsConfirm) {
+            const name = (input as { name: string }).name;
+            const isPrivate = Boolean((input as { private?: boolean }).private);
+            return JSON.stringify({
+              pending_confirmation: true,
+              tool_call_id: record.id,
+              message: `Confirma crear el repositorio "${name}"${isPrivate ? " (privado)" : " (público)"}.`,
+            });
+          }
+          const result = await executeGithubTool(
+            "github_create_repo",
+            input as Record<string, unknown>,
+            ctx.githubAccessToken
+          );
+          await updateToolCallStatus(ctx.db, record.id, "executed", result);
+          return JSON.stringify(result);
+        },
+        {
+          name: "github_create_repo",
+          description: "Creates a new GitHub repository for the user. Requires confirmation.",
+          schema: z.object({
+            name: z.string(),
+            description: z.string().optional().default(""),
+            private: z.boolean().optional().default(false),
           }),
         }
       )

@@ -50,3 +50,26 @@ export async function getPendingToolCall(db: DbClient, toolCallId: string) {
     .single();
   return data as ToolCall | null;
 }
+
+export async function getToolCallById(db: DbClient, toolCallId: string) {
+  const { data, error } = await db
+    .from("tool_calls")
+    .select("*")
+    .eq("id", toolCallId)
+    .maybeSingle();
+  if (error) throw error;
+  return data as ToolCall | null;
+}
+
+export async function getAgentSessionUserId(
+  db: DbClient,
+  sessionId: string
+): Promise<string | null> {
+  const { data, error } = await db
+    .from("agent_sessions")
+    .select("user_id")
+    .eq("id", sessionId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as { user_id: string } | null)?.user_id ?? null;
+}

@@ -5,7 +5,7 @@ export function createChatModel() {
   if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
 
   return new ChatOpenAI({
-    modelName: "openai/gpt-4o-mini",
+    modelName: "qwen/qwen3.6-plus:free",
     temperature: 0.3,
     configuration: {
       baseURL: "https://openrouter.ai/api/v1",
