@@ -4,16 +4,8 @@ import {
   getDecryptedGithubToken,
   getToolCallById,
   getAgentSessionUserId,
-  updateToolCallStatus,
 } from "@agents/db";
-import { runAgent, executeGithubTool } from "@agents/agent";
-
-const GITHUB_TOOL_NAMES = new Set([
-  "github_list_repos",
-  "github_list_issues",
-  "github_create_issue",
-  "github_create_repo",
-]);
+import { runAgent, resumeAgent } from "@agents/agent";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
@@ -73,17 +65,57 @@ async function answerCallbackQuery(callbackQueryId: string, text: string) {
   });
 }
 
-function formatGithubToolResult(
-  toolName: string,
-  result: Record<string, unknown>
-): string {
-  if (typeof result.issue_url === "string") {
-    return `Issue creado: ${result.issue_url}`;
-  }
-  if (typeof result.html_url === "string") {
-    return `Repositorio creado: ${result.html_url}`;
-  }
-  return `${toolName}: ${JSON.stringify(result).slice(0, 3500)}`;
+async function resumeAgentForTelegramSession(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  sessionId: string,
+  action: "approve" | "reject"
+) {
+  const { data: profile } = await db
+    .from("profiles")
+    .select("agent_system_prompt")
+    .eq("id", userId)
+    .single();
+
+  const { data: toolSettings } = await db
+    .from("user_tool_settings")
+    .select("*")
+    .eq("user_id", userId);
+
+  const { data: integrations } = await db
+    .from("user_integrations")
+    .select("id,user_id,provider,scopes,status,created_at")
+    .eq("user_id", userId)
+    .eq("status", "active");
+
+  const githubAccessToken = await getDecryptedGithubToken(db, userId);
+
+  return resumeAgent({
+    userId,
+    sessionId,
+    systemPrompt: profile?.agent_system_prompt ?? "Eres un asistente útil.",
+    db,
+    enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({
+      id: t.id as string,
+      user_id: t.user_id as string,
+      tool_id: t.tool_id as string,
+      enabled: t.enabled as boolean,
+      config_json: (t.config_json as Record<string, unknown>) ?? {},
+    })),
+    integrations: (integrations ?? []).map((i: Record<string, unknown>) => ({
+      id: i.id as string,
+      user_id: i.user_id as string,
+      provider: i.provider as string,
+      scopes: (i.scopes as string[]) ?? [],
+      status: i.status as "active" | "revoked" | "expired",
+      created_at: i.created_at as string,
+    })),
+    githubAccessToken,
+    resume:
+      action === "approve"
+        ? { type: "approve" }
+        : { type: "reject", message: "Acción cancelada desde Telegram." },
+  });
 }
 
 export async function POST(request: Request) {
@@ -116,9 +148,23 @@ export async function POST(request: Request) {
       const tc = await getToolCallById(db, toolCallId);
       const sessionUid = tc ? await getAgentSessionUserId(db, tc.session_id) : null;
       if (tc?.status === "pending_confirmation" && sessionUid === linkedUserId) {
-        await updateToolCallStatus(db, toolCallId, "rejected");
         await answerCallbackQuery(cb.id, "Rechazado");
-        await sendTelegramMessage(cb.message.chat.id, "Acción cancelada.");
+        try {
+          const result = await resumeAgentForTelegramSession(
+            db,
+            linkedUserId,
+            tc.session_id,
+            "reject"
+          );
+          const text = result.response?.trim() || "Acción cancelada.";
+          await sendTelegramMessage(cb.message.chat.id, text);
+        } catch (e) {
+          console.error("Telegram resume (reject):", e);
+          await sendTelegramMessage(
+            cb.message.chat.id,
+            "No se pudo completar el rechazo. Prueba en la web."
+          );
+        }
       } else {
         await answerCallbackQuery(cb.id, "No aplicable");
       }
@@ -140,10 +186,6 @@ export async function POST(request: Request) {
         await answerCallbackQuery(cb.id, "No autorizado");
         return NextResponse.json({ ok: true });
       }
-      if (!GITHUB_TOOL_NAMES.has(tc.tool_name)) {
-        await answerCallbackQuery(cb.id, "Herramienta no soportada");
-        return NextResponse.json({ ok: true });
-      }
 
       const token = await getDecryptedGithubToken(db, linkedUserId);
       if (!token) {
@@ -156,18 +198,31 @@ export async function POST(request: Request) {
       }
 
       await answerCallbackQuery(cb.id, "Aprobado");
-      const result = await executeGithubTool(tc.tool_name, tc.arguments_json, token);
-      if ("error" in result && result.error) {
-        await updateToolCallStatus(db, toolCallId, "failed", result);
-        await sendTelegramMessage(
-          cb.message.chat.id,
-          `Error al ejecutar: ${String(result.error)}`
+      try {
+        const result = await resumeAgentForTelegramSession(
+          db,
+          linkedUserId,
+          tc.session_id,
+          "approve"
         );
-      } else {
-        await updateToolCallStatus(db, toolCallId, "executed", result);
+        if (result.pendingConfirmation) {
+          await sendTelegramMessage(cb.message.chat.id, result.pendingConfirmation.message, {
+            inline_keyboard: [
+              [
+                { text: "Aprobar", callback_data: `approve:${result.pendingConfirmation.toolCallId}` },
+                { text: "Cancelar", callback_data: `reject:${result.pendingConfirmation.toolCallId}` },
+              ],
+            ],
+          });
+        } else {
+          const text = result.response?.trim() || "Listo.";
+          await sendTelegramMessage(cb.message.chat.id, text);
+        }
+      } catch (e) {
+        console.error("Telegram resume (approve):", e);
         await sendTelegramMessage(
           cb.message.chat.id,
-          formatGithubToolResult(tc.tool_name, result)
+          "No se pudo completar la acción. Prueba en la web."
         );
       }
       return NextResponse.json({ ok: true });

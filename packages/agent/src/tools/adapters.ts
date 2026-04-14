@@ -2,7 +2,7 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { DbClient } from "@agents/db";
 import type { UserToolSetting, UserIntegration } from "@agents/types";
-import { TOOL_CATALOG, toolRequiresConfirmation } from "./catalog";
+import { TOOL_CATALOG } from "./catalog";
 import { createToolCall, updateToolCallStatus } from "@agents/db";
 import { executeGithubTool } from "./execute-github-tool";
 
@@ -105,7 +105,7 @@ export function buildLangChainTools(ctx: ToolContext) {
           name: "github_list_repos",
           description: "Lists the user's GitHub repositories.",
           schema: z.object({
-            per_page: z.number().max(30).optional().default(10),
+            per_page: z.number().max(30).nullish().default(10),
           }),
         }
       )
@@ -140,7 +140,7 @@ export function buildLangChainTools(ctx: ToolContext) {
           schema: z.object({
             owner: z.string(),
             repo: z.string(),
-            state: z.enum(["open", "closed", "all"]).optional().default("open"),
+            state: z.enum(["open", "closed", "all"]).nullish().default("open"),
           }),
         }
       )
@@ -150,32 +150,14 @@ export function buildLangChainTools(ctx: ToolContext) {
   if (isToolAvailable("github_create_issue", ctx)) {
     tools.push(
       tool(
-        async (input) => {
+        async () => {
           if (!ctx.githubAccessToken) {
             return githubDisconnectedMessage();
           }
-          const needsConfirm = toolRequiresConfirmation("github_create_issue");
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "github_create_issue",
-            input as Record<string, unknown>,
-            needsConfirm
-          );
-          if (needsConfirm) {
-            return JSON.stringify({
-              pending_confirmation: true,
-              tool_call_id: record.id,
-              message: `Confirma crear el issue "${(input as { title: string }).title}" en ${(input as { owner: string; repo: string }).owner}/${(input as { owner: string; repo: string }).repo}.`,
-            });
-          }
-          const result = await executeGithubTool(
-            "github_create_issue",
-            input as Record<string, unknown>,
-            ctx.githubAccessToken
-          );
-          await updateToolCallStatus(ctx.db, record.id, "executed", result);
-          return JSON.stringify(result);
+          return JSON.stringify({
+            pending_hitl:
+              "Esta acción se ejecuta solo tras confirmación en el flujo del agente.",
+          });
         },
         {
           name: "github_create_issue",
@@ -184,7 +166,7 @@ export function buildLangChainTools(ctx: ToolContext) {
             owner: z.string(),
             repo: z.string(),
             title: z.string(),
-            body: z.string().optional().default(""),
+            body: z.string().nullish().default(""),
           }),
         }
       )
@@ -194,42 +176,22 @@ export function buildLangChainTools(ctx: ToolContext) {
   if (isToolAvailable("github_create_repo", ctx)) {
     tools.push(
       tool(
-        async (input) => {
+        async () => {
           if (!ctx.githubAccessToken) {
             return githubDisconnectedMessage();
           }
-          const needsConfirm = toolRequiresConfirmation("github_create_repo");
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "github_create_repo",
-            input as Record<string, unknown>,
-            needsConfirm
-          );
-          if (needsConfirm) {
-            const name = (input as { name: string }).name;
-            const isPrivate = Boolean((input as { private?: boolean }).private);
-            return JSON.stringify({
-              pending_confirmation: true,
-              tool_call_id: record.id,
-              message: `Confirma crear el repositorio "${name}"${isPrivate ? " (privado)" : " (público)"}.`,
-            });
-          }
-          const result = await executeGithubTool(
-            "github_create_repo",
-            input as Record<string, unknown>,
-            ctx.githubAccessToken
-          );
-          await updateToolCallStatus(ctx.db, record.id, "executed", result);
-          return JSON.stringify(result);
+          return JSON.stringify({
+            pending_hitl:
+              "Esta acción se ejecuta solo tras confirmación en el flujo del agente.",
+          });
         },
         {
           name: "github_create_repo",
           description: "Creates a new GitHub repository for the user. Requires confirmation.",
           schema: z.object({
             name: z.string(),
-            description: z.string().optional().default(""),
-            private: z.boolean().optional().default(false),
+            description: z.string().nullish().default(""),
+            private: z.boolean().nullish().default(false),
           }),
         }
       )

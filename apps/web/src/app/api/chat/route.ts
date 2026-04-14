@@ -3,6 +3,39 @@ import { createClient } from "@/lib/supabase/server";
 import { createServerClient, getDecryptedGithubToken } from "@agents/db";
 import { runAgent } from "@agents/agent";
 
+function chatRouteErrorMessage(error: unknown): { message: string; status: number } {
+  if (error && typeof error === "object") {
+    const e = error as Record<string, unknown>;
+    const code = e.code;
+    const lc = e.lc_error_code;
+    const msg =
+      typeof e.message === "string"
+        ? e.message
+        : typeof (e.error as Record<string, unknown>)?.message === "string"
+          ? String((e.error as Record<string, unknown>).message)
+          : null;
+    const raw =
+      typeof (e.error as Record<string, unknown>)?.metadata === "object" &&
+      (e.error as Record<string, unknown>).metadata !== null
+        ? String(
+            ((e.error as Record<string, unknown>).metadata as Record<string, unknown>)
+              .raw ?? ""
+          )
+        : "";
+
+    if (code === 429 || lc === "MODEL_RATE_LIMIT") {
+      return {
+        message:
+          raw ||
+          msg ||
+          "Límite de uso del modelo (429). Los modelos gratuitos en OpenRouter se saturan a menudo; espera unos minutos, prueba otro modelo en OPENROUTER_MODEL o usa un plan de pago.",
+        status: 429,
+      };
+    }
+  }
+  return { message: "Internal server error", status: 500 };
+}
+
 export async function POST(request: Request) {
   try {
     const supabase = await createClient();
@@ -106,9 +139,7 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     console.error("Chat API error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    const { message, status } = chatRouteErrorMessage(error);
+    return NextResponse.json({ error: message }, { status });
   }
 }

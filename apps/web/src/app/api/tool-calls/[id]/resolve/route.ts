@@ -5,16 +5,8 @@ import {
   getToolCallById,
   getAgentSessionUserId,
   getDecryptedGithubToken,
-  updateToolCallStatus,
 } from "@agents/db";
-import { executeGithubTool } from "@agents/agent";
-
-const GITHUB_TOOL_NAMES = new Set([
-  "github_list_repos",
-  "github_list_issues",
-  "github_create_issue",
-  "github_create_repo",
-]);
+import { resumeAgent } from "@agents/agent";
 
 export async function POST(
   request: Request,
@@ -60,33 +52,76 @@ export async function POST(
     );
   }
 
-  if (action === "reject") {
-    await updateToolCallStatus(db, toolCallId, "rejected");
-    return NextResponse.json({ ok: true });
-  }
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("agent_system_prompt")
+    .eq("id", user.id)
+    .single();
 
-  if (!GITHUB_TOOL_NAMES.has(tc.tool_name)) {
-    return NextResponse.json({ error: "Unsupported tool" }, { status: 400 });
-  }
+  const { data: toolSettings } = await supabase
+    .from("user_tool_settings")
+    .select("*")
+    .eq("user_id", user.id);
 
-  const token = await getDecryptedGithubToken(db, user.id);
-  if (!token) {
+  const { data: integrations } = await supabase
+    .from("user_integrations")
+    .select("id,user_id,provider,scopes,status,created_at")
+    .eq("user_id", user.id)
+    .eq("status", "active");
+
+  const githubAccessToken = await getDecryptedGithubToken(db, user.id);
+
+  try {
+    const result = await resumeAgent({
+      userId: user.id,
+      sessionId: tc.session_id,
+      systemPrompt: profile?.agent_system_prompt ?? "Eres un asistente útil.",
+      db,
+      enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({
+        id: t.id as string,
+        user_id: t.user_id as string,
+        tool_id: t.tool_id as string,
+        enabled: t.enabled as boolean,
+        config_json: (t.config_json as Record<string, unknown>) ?? {},
+      })),
+      integrations: (integrations ?? []).map((i: Record<string, unknown>) => ({
+        id: i.id as string,
+        user_id: i.user_id as string,
+        provider: i.provider as string,
+        scopes: (i.scopes as string[]) ?? [],
+        status: i.status as "active" | "revoked" | "expired",
+        created_at: i.created_at as string,
+      })),
+      githubAccessToken,
+      resume:
+        action === "approve"
+          ? { type: "approve" }
+          : { type: "reject", message: "Acción cancelada por el usuario." },
+    });
+
+    if (result.pendingConfirmation) {
+      return NextResponse.json({
+        ok: true,
+        response: null,
+        pendingConfirmation: {
+          toolCallId: result.pendingConfirmation.toolCallId,
+          toolName: result.pendingConfirmation.toolName,
+          message: result.pendingConfirmation.message,
+        },
+        toolCalls: result.toolCalls,
+      });
+    }
+
+    return NextResponse.json({
+      ok: true,
+      response: result.response,
+      toolCalls: result.toolCalls,
+    });
+  } catch (e) {
+    console.error("resumeAgent error:", e);
     return NextResponse.json(
-      { error: "GitHub is not connected or token could not be decrypted" },
-      { status: 400 }
+      { error: "Failed to resume agent run" },
+      { status: 500 }
     );
   }
-
-  const result = await executeGithubTool(tc.tool_name, tc.arguments_json, token);
-
-  if ("error" in result && result.error) {
-    await updateToolCallStatus(db, toolCallId, "failed", result);
-    return NextResponse.json(
-      { ok: false, error: String(result.error) },
-      { status: 200 }
-    );
-  }
-
-  await updateToolCallStatus(db, toolCallId, "executed", result);
-  return NextResponse.json({ ok: true, result });
 }

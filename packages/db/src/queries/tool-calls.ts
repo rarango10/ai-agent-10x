@@ -6,7 +6,8 @@ export async function createToolCall(
   sessionId: string,
   toolName: string,
   args: Record<string, unknown>,
-  requiresConfirmation: boolean
+  requiresConfirmation: boolean,
+  lcToolCallId?: string
 ) {
   const { data, error } = await db
     .from("tool_calls")
@@ -16,11 +17,27 @@ export async function createToolCall(
       arguments_json: args,
       status: requiresConfirmation ? "pending_confirmation" : "approved",
       requires_confirmation: requiresConfirmation,
+      ...(lcToolCallId ? { lc_tool_call_id: lcToolCallId } : {}),
     })
     .select()
     .single();
   if (error) throw error;
   return data as ToolCall;
+}
+
+export async function getToolCallBySessionAndLcId(
+  db: DbClient,
+  sessionId: string,
+  lcToolCallId: string
+): Promise<ToolCall | null> {
+  const { data, error } = await db
+    .from("tool_calls")
+    .select("*")
+    .eq("session_id", sessionId)
+    .eq("lc_tool_call_id", lcToolCallId)
+    .maybeSingle();
+  if (error) throw error;
+  return data as ToolCall | null;
 }
 
 export async function updateToolCallStatus(
