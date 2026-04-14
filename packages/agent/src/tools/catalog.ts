@@ -78,6 +78,27 @@ export const TOOL_CATALOG: ToolDefinition[] = [
       required: ["name"],
     },
   },
+  {
+    id: "Bash",
+    name: "Bash",
+    description:
+      "Use this tool when you need to execute bash commands and interact with the operating system. " +
+      "Runs commands in a new shell process on the application host (unix-like) and returns stdout/stderr as text. " +
+      "Requires user confirmation. In cloud deployments, commands run on the server, not the end user's machine.",
+    risk: "high",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        terminal: {
+          type: "string",
+          description:
+            "Logical terminal/session id used to pick the working directory (see user tool config terminals map).",
+        },
+        prompt: { type: "string", description: "Bash command or script to run (passed to bash -lc)." },
+      },
+      required: ["terminal", "prompt"],
+    },
+  },
 ];
 
 export function getToolRisk(toolId: string): ToolRisk {

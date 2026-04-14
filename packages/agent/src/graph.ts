@@ -102,6 +102,12 @@ function hitlUiMessage(toolName: string, args: Record<string, unknown>): string 
     const isPrivate = Boolean(args.private);
     return `Confirma crear el repositorio "${name}"${isPrivate ? " (privado)" : " (público)"}.`;
   }
+  if (toolName === "Bash") {
+    const terminal = String(args.terminal ?? "");
+    const prompt = String(args.prompt ?? "");
+    const preview = prompt.length > 120 ? `${prompt.slice(0, 120)}…` : prompt;
+    return `Confirma ejecutar Bash en la terminal lógica "${terminal}": ${preview}`;
+  }
   return "Confirma esta acción.";
 }
 

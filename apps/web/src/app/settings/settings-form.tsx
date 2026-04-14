@@ -22,6 +22,7 @@ const TOOL_IDS = [
   "github_list_issues",
   "github_create_issue",
   "github_create_repo",
+  "Bash",
 ];
 
 export function SettingsForm({

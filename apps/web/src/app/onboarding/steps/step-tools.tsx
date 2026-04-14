@@ -50,6 +50,14 @@ const AVAILABLE_TOOLS = [
     risk: "medium" as const,
     requiresIntegration: "github",
   },
+  {
+    id: "Bash",
+    name: "Bash",
+    description:
+      "Ejecuta comandos en el servidor de la app (unix-like). Requiere confirmación; riesgo alto.",
+    risk: "high" as const,
+    requiresIntegration: null,
+  },
 ];
 
 const RISK_LABELS = {

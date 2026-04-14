@@ -5,6 +5,7 @@ import type { UserToolSetting, UserIntegration } from "@agents/types";
 import { TOOL_CATALOG } from "./catalog";
 import { createToolCall, updateToolCallStatus } from "@agents/db";
 import { executeGithubTool } from "./execute-github-tool";
+import { executeBash, isBashToolDisabledByEnv, resolveBashCwd } from "./execute-bash";
 
 interface ToolContext {
   db: DbClient;
@@ -192,6 +193,33 @@ export function buildLangChainTools(ctx: ToolContext) {
             name: z.string(),
             description: z.string().nullish().default(""),
             private: z.boolean().nullish().default(false),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("Bash", ctx) && !isBashToolDisabledByEnv()) {
+    const bashSetting = ctx.enabledTools.find((t) => t.tool_id === "Bash");
+    tools.push(
+      tool(
+        async ({ terminal, prompt }) => {
+          const cwd = resolveBashCwd(terminal, bashSetting?.config_json);
+          return executeBash({ prompt, cwd });
+        },
+        {
+          name: "Bash",
+          description:
+            "Use this tool when you need to execute bash commands and interact with the operating system. " +
+            "Runs commands in a new shell process on the application host (unix-like) and returns stdout/stderr as text. " +
+            "Requires user confirmation. In cloud deployments, commands run on the server, not the end user's machine.",
+          schema: z.object({
+            terminal: z
+              .string()
+              .describe(
+                "Logical terminal/session id used to pick the working directory (see user tool config)."
+              ),
+            prompt: z.string().describe("Bash command or script to run (passed to bash -lc)."),
           }),
         }
       )
