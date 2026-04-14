@@ -10,6 +10,9 @@ import { runAgent, resumeAgent } from "@agents/agent";
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
 
+/** Vercel / serverless: el agente puede tardar más que el límite por defecto (~10s). */
+export const maxDuration = 60;
+
 interface TelegramUpdate {
   update_id: number;
   message?: {
@@ -119,8 +122,18 @@ async function resumeAgentForTelegramSession(
 }
 
 export async function POST(request: Request) {
+  if (!BOT_TOKEN) {
+    console.error(
+      "[telegram/webhook] TELEGRAM_BOT_TOKEN no está definido; no se puede llamar a la API de Telegram."
+    );
+    return NextResponse.json({ error: "Bot not configured" }, { status: 503 });
+  }
+
   const secret = request.headers.get("x-telegram-bot-api-secret-token");
   if (WEBHOOK_SECRET && secret !== WEBHOOK_SECRET) {
+    console.warn(
+      "[telegram/webhook] Cabecera x-telegram-bot-api-secret-token ausente o incorrecta mientras TELEGRAM_WEBHOOK_SECRET está definido. Vuelve a registrar el webhook con GET /api/telegram/setup (mismo secreto que en .env)."
+    );
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -399,7 +412,10 @@ export async function POST(request: Request) {
         ],
       });
     } else {
-      await sendTelegramMessage(chatId, result.response);
+      const reply =
+        result.response?.trim() ||
+        "No recibí una respuesta con texto. Intenta de nuevo o reformula el mensaje.";
+      await sendTelegramMessage(chatId, reply);
     }
   } catch (error) {
     console.error("Telegram agent error:", error);
