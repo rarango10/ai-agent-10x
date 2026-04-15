@@ -3,9 +3,14 @@ import { z } from "zod";
 import type { DbClient } from "@agents/db";
 import type { UserToolSetting, UserIntegration } from "@agents/types";
 import { TOOL_CATALOG } from "./catalog";
-import { createToolCall, updateToolCallStatus } from "@agents/db";
 import { executeGithubTool } from "./execute-github-tool";
 import { executeBash, isBashToolDisabledByEnv, resolveBashCwd } from "./execute-bash";
+import {
+  executeEditFile,
+  executeReadFile,
+  executeWriteFileNewOnly,
+  isFileToolsDisabledByEnv,
+} from "./filesystem-tools";
 
 interface ToolContext {
   db: DbClient;
@@ -87,19 +92,11 @@ export function buildLangChainTools(ctx: ToolContext) {
           if (!ctx.githubAccessToken) {
             return githubDisconnectedMessage();
           }
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "github_list_repos",
-            input as Record<string, unknown>,
-            false
-          );
           const result = await executeGithubTool(
             "github_list_repos",
             input as Record<string, unknown>,
             ctx.githubAccessToken
           );
-          await updateToolCallStatus(ctx.db, record.id, "executed", result);
           return JSON.stringify(result);
         },
         {
@@ -120,19 +117,11 @@ export function buildLangChainTools(ctx: ToolContext) {
           if (!ctx.githubAccessToken) {
             return githubDisconnectedMessage();
           }
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "github_list_issues",
-            input as Record<string, unknown>,
-            false
-          );
           const result = await executeGithubTool(
             "github_list_issues",
             input as Record<string, unknown>,
             ctx.githubAccessToken
           );
-          await updateToolCallStatus(ctx.db, record.id, "executed", result);
           return JSON.stringify(result);
         },
         {
@@ -193,6 +182,126 @@ export function buildLangChainTools(ctx: ToolContext) {
             name: z.string(),
             description: z.string().nullish().default(""),
             private: z.boolean().nullish().default(false),
+          }),
+        }
+      )
+    );
+  }
+
+  const bashSettingForWorkspace = ctx.enabledTools.find((t) => t.tool_id === "Bash")
+    ?.config_json;
+
+  if (isToolAvailable("read_file", ctx) && !isFileToolsDisabledByEnv()) {
+    tools.push(
+      tool(
+        async (input) => {
+          const { terminal, path: filePath, offset, limit } = input;
+          const result = executeReadFile({
+            terminal,
+            path: filePath,
+            offset: offset ?? undefined,
+            limit: limit ?? undefined,
+            configJson: bashSettingForWorkspace,
+          });
+          return JSON.stringify(result);
+        },
+        {
+          name: "read_file",
+          description:
+            "Read a text file from the user's workspace on the application host. " +
+            "When to use: inspect file contents (source, config, docs) under a configured workspace root without shell. " +
+            "When NOT to use: to create files (write_file), modify files (edit_file), or paths outside the workspace for `terminal`. " +
+            "Parameters: terminal selects workspace root (same as Bash); path is relative; offset optional 1-based start line; limit optional max lines. " +
+            "Success: JSON ok=true with line metadata and content. Failure: ok=false with error and code.",
+          schema: z.object({
+            terminal: z
+              .string()
+              .describe(
+                "Logical terminal id that selects the workspace root (same rules as Bash)."
+              ),
+            path: z
+              .string()
+              .describe("File path relative to the workspace root; must not escape the workspace."),
+            offset: z
+              .number()
+              .int()
+              .min(1)
+              .optional()
+              .describe("Optional 1-based start line (default: first line)."),
+            limit: z
+              .number()
+              .int()
+              .min(1)
+              .optional()
+              .describe("Optional max lines to return (defaults and caps apply)."),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("write_file", ctx) && !isFileToolsDisabledByEnv()) {
+    tools.push(
+      tool(
+        async (input) => {
+          const { terminal, path: filePath, content } = input;
+          const result = executeWriteFileNewOnly({
+            terminal,
+            path: filePath,
+            content,
+            configJson: bashSettingForWorkspace,
+          });
+          return JSON.stringify(result);
+        },
+        {
+          name: "write_file",
+          description:
+            "Create a NEW file inside the user's workspace. NEVER overwrites. " +
+            "When to use: a new file that does not exist yet. When NOT: file may exist (use edit_file). " +
+            "Requires user confirmation. Success: ok=true, path, bytesWritten.",
+          schema: z.object({
+            terminal: z.string().describe("Selects workspace root (same as Bash)."),
+            path: z
+              .string()
+              .describe("Relative path from workspace root; must remain inside the workspace."),
+            content: z.string().describe("Full file contents to write (text)."),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("edit_file", ctx) && !isFileToolsDisabledByEnv()) {
+    tools.push(
+      tool(
+        async (input) => {
+          const { terminal, path: filePath, old_string, new_string } = input;
+          const result = executeEditFile({
+            terminal,
+            path: filePath,
+            old_string,
+            new_string,
+            configJson: bashSettingForWorkspace,
+          });
+          return JSON.stringify(result);
+        },
+        {
+          name: "edit_file",
+          description:
+            "Edit an EXISTING file: replace exactly ONE occurrence of old_string with new_string. " +
+            "When NOT to use: create new files (write_file). Requires confirmation. " +
+            "Success: ok=true, replacements=1, sizeBytes.",
+          schema: z.object({
+            terminal: z.string().describe("Selects workspace root (same as Bash)."),
+            path: z
+              .string()
+              .describe("Relative path from workspace root; file must exist."),
+            old_string: z
+              .string()
+              .describe("Exact substring; must appear exactly once in the file."),
+            new_string: z
+              .string()
+              .describe("Replacement (may be empty to delete the matched segment)."),
           }),
         }
       )

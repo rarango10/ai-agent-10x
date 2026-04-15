@@ -58,6 +58,29 @@ const AVAILABLE_TOOLS = [
     risk: "high" as const,
     requiresIntegration: null,
   },
+  {
+    id: "read_file",
+    name: "Leer archivo",
+    description:
+      "Lee archivos de texto dentro del workspace configurado (sin shell). Soporta rango por líneas.",
+    risk: "low" as const,
+    requiresIntegration: null,
+  },
+  {
+    id: "write_file",
+    name: "Crear archivo",
+    description: "Crea solo archivos nuevos; si ya existe, falla. Requiere confirmación.",
+    risk: "high" as const,
+    requiresIntegration: null,
+  },
+  {
+    id: "edit_file",
+    name: "Editar archivo",
+    description:
+      "Cambia un archivo existente sustituyendo un texto exacto una sola vez. Requiere confirmación.",
+    risk: "high" as const,
+    requiresIntegration: null,
+  },
 ];
 
 const RISK_LABELS = {

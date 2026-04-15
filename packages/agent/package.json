@@ -4,7 +4,8 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "scripts": {
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "test": "node --import tsx --test src/tools/filesystem-tools.test.ts"
   },
   "dependencies": {
     "@agents/db": "*",
@@ -18,6 +19,7 @@
   },
   "devDependencies": {
     "@types/pg": "^8.20.0",
+    "tsx": "^4.19.0",
     "typescript": "^5"
   }
 }

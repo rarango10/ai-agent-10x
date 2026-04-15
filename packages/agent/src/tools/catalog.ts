@@ -79,6 +79,103 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     },
   },
   {
+    id: "read_file",
+    name: "read_file",
+    description:
+      "Read a text file from the user's workspace on the application host. " +
+      "When to use: inspect file contents (source, config, docs) under a configured workspace root without shell. " +
+      "When NOT to use: to create files (write_file), modify files (edit_file), or paths outside the workspace for `terminal`. " +
+      "Parameters: terminal selects workspace root (same as Bash: user tool config terminals map, default_cwd, env/process cwd); " +
+      "path is relative to that root; offset optional 1-based start line (default 1); limit optional max lines (defaults and caps apply). " +
+      "Process: resolve workspace → validate path → read UTF-8 → return line range. " +
+      "Success: JSON with ok=true, line metadata, content excerpt. Failure: ok=false, error, stable code.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        terminal: {
+          type: "string",
+          description:
+            "Logical terminal id that selects the workspace root (same rules as Bash).",
+        },
+        path: {
+          type: "string",
+          description: "File path relative to the workspace root; must not escape the workspace.",
+        },
+        offset: {
+          type: "number",
+          description: "Optional 1-based start line (default: first line).",
+        },
+        limit: {
+          type: "number",
+          description: "Optional max lines to return (defaults and caps apply).",
+        },
+      },
+      required: ["terminal", "path"],
+    },
+  },
+  {
+    id: "write_file",
+    name: "write_file",
+    description:
+      "Create a NEW file on the application host inside the user's workspace. NEVER overwrites: if the path exists, fails with an error. " +
+      "When to use: user wants a new file that does not exist yet under the workspace root for `terminal`. " +
+      "When NOT to use: if the file may exist (use edit_file or read_file first); paths outside workspace. " +
+      "Parameters: terminal, path (relative), content (full text). " +
+      "After user confirmation (high risk): resolve → reject if exists → mkdir parents if needed → write once. " +
+      "Success: ok=true, path, bytesWritten. Failure: ok=false, error, code (e.g. FILE_ALREADY_EXISTS).",
+    risk: "high",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        terminal: {
+          type: "string",
+          description: "Selects workspace root (same as Bash).",
+        },
+        path: {
+          type: "string",
+          description: "Relative path from workspace root; must remain inside the workspace.",
+        },
+        content: { type: "string", description: "Full file contents to write (text)." },
+      },
+      required: ["terminal", "path", "content"],
+    },
+  },
+  {
+    id: "edit_file",
+    name: "edit_file",
+    description:
+      "Edit an EXISTING text file by replacing exactly ONE occurrence of old_string with new_string. " +
+      "When to use: file exists and you have a precise excerpt of current contents. " +
+      "When NOT to use: create new files (write_file); if unsure of exact text, read_file first. " +
+      "old_string must appear exactly once (else NOT_FOUND or AMBIGUOUS_MATCH). new_string may be empty. " +
+      "After user confirmation: resolve → read → single replace → write. " +
+      "Success: ok=true, path, replacements=1, sizeBytes. Failure: ok=false, error, code.",
+    risk: "high",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        terminal: {
+          type: "string",
+          description: "Selects workspace root (same as Bash).",
+        },
+        path: {
+          type: "string",
+          description: "Relative path; file must exist and be a regular file.",
+        },
+        old_string: {
+          type: "string",
+          description: "Exact substring to replace; must occur exactly once.",
+        },
+        new_string: {
+          type: "string",
+          description: "Replacement text (may be empty to delete the matched segment).",
+        },
+      },
+      required: ["terminal", "path", "old_string", "new_string"],
+    },
+  },
+  {
     id: "Bash",
     name: "Bash",
     description:

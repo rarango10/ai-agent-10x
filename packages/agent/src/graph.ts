@@ -87,6 +87,28 @@ const GraphState = Annotation.Root({
 
 const MAX_TOOL_ITERATIONS = 6;
 
+/** Max chars stored in tool_calls.result_json for low-risk tools (matches HITL generic path). */
+const TOOL_CALL_RESULT_DB_MAX_CHARS = 5000;
+
+function toolCallResultJsonForDb(content: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const ser = JSON.stringify(parsed);
+      if (ser.length <= TOOL_CALL_RESULT_DB_MAX_CHARS) {
+        return parsed as Record<string, unknown>;
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  const truncated = content.length > TOOL_CALL_RESULT_DB_MAX_CHARS;
+  return {
+    result: content.slice(0, TOOL_CALL_RESULT_DB_MAX_CHARS),
+    ...(truncated ? { truncated: true as const } : {}),
+  };
+}
+
 function hitlUiMessage(toolName: string, args: Record<string, unknown>): string {
   if (toolName === "get_user_preferences") {
     return "Confirma leer tus preferencias y la configuración del agente.";
@@ -107,6 +129,20 @@ function hitlUiMessage(toolName: string, args: Record<string, unknown>): string 
     const prompt = String(args.prompt ?? "");
     const preview = prompt.length > 120 ? `${prompt.slice(0, 120)}…` : prompt;
     return `Confirma ejecutar Bash en la terminal lógica "${terminal}": ${preview}`;
+  }
+  if (toolName === "write_file") {
+    const terminal = String(args.terminal ?? "");
+    const filePath = String(args.path ?? "");
+    const content = String(args.content ?? "");
+    const approxChars = content.length;
+    return `Confirma crear el archivo "${filePath}" (terminal "${terminal}", ~${approxChars} caracteres).`;
+  }
+  if (toolName === "edit_file") {
+    const terminal = String(args.terminal ?? "");
+    const filePath = String(args.path ?? "");
+    const oldStr = String(args.old_string ?? "");
+    const preview = oldStr.length > 80 ? `${oldStr.slice(0, 80)}…` : oldStr;
+    return `Confirma editar "${filePath}" (terminal "${terminal}"), reemplazando: ${preview}`;
   }
   return "Confirma esta acción.";
 }
@@ -190,8 +226,24 @@ function createCompiledGraph(runtime: GraphRuntime) {
       if (!tc.id || toolCallHasResponse(state.messages, index, tc.id)) continue;
       if (toolRequiresConfirmation(tc.name)) continue;
 
+      let record = await getToolCallBySessionAndLcId(db, state.sessionId, tc.id);
+      if (!record) {
+        record = await createToolCall(
+          db,
+          state.sessionId,
+          tc.name,
+          (tc.args ?? {}) as Record<string, unknown>,
+          false,
+          tc.id
+        );
+      }
+
       const matchingTool = lcTools.find((t) => t.name === tc.name);
       if (!matchingTool) {
+        await updateToolCallStatus(db, record.id, "failed", {
+          error: "tool_not_available",
+          message: `La herramienta "${tc.name}" no está disponible.`,
+        });
         results.push(
           new ToolMessage({
             content: JSON.stringify({
@@ -203,15 +255,35 @@ function createCompiledGraph(runtime: GraphRuntime) {
         toolCallNames.push(tc.name);
         continue;
       }
+
       toolCallNames.push(tc.name);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = await (matchingTool as any).invoke(tc.args);
-      results.push(
-        new ToolMessage({
-          content: String(result),
-          tool_call_id: tc.id,
-        })
-      );
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const result = await (matchingTool as any).invoke(tc.args);
+        const resultStr = String(result);
+        await updateToolCallStatus(
+          db,
+          record.id,
+          "executed",
+          toolCallResultJsonForDb(resultStr)
+        );
+        results.push(
+          new ToolMessage({
+            content: resultStr,
+            tool_call_id: tc.id,
+          })
+        );
+      } catch (execErr) {
+        await updateToolCallStatus(db, record.id, "failed", {
+          error: String(execErr),
+        });
+        results.push(
+          new ToolMessage({
+            content: JSON.stringify({ error: String(execErr) }),
+            tool_call_id: tc.id,
+          })
+        );
+      }
     }
 
     return results.length ? { messages: results } : {};
