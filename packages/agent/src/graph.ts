@@ -11,11 +11,13 @@ import type { DbClient } from "@agents/db";
 import type { UserToolSetting, UserIntegration } from "@agents/types";
 import {
   createToolCall,
+  getProfile,
   getToolCallBySessionAndLcId,
   getSessionMessages,
   addMessage,
   updateToolCallStatus,
 } from "@agents/db";
+import { buildClockPrefix } from "./time-context";
 import { createChatModel } from "./model";
 import { buildLangChainTools } from "./tools/adapters";
 import { toolRequiresConfirmation } from "./tools/catalog";
@@ -61,6 +63,8 @@ export interface AgentInput {
   integrations: UserIntegration[];
   /** Decrypted GitHub OAuth token; server-only, never sent to the client. */
   githubAccessToken?: string;
+  /** IANA timezone from profile; if omitted, loaded from DB (extra query). */
+  userTimeZone?: string;
 }
 
 export interface ResumeAgentInput
@@ -613,6 +617,19 @@ function toolOutputFallbackAfterLastHuman(messages: BaseMessage[]): string {
   return `Resultado de la herramienta:\n\n${body}`;
 }
 
+function humanMessageForLlm(clockPrefix: string, userText: string): HumanMessage {
+  return new HumanMessage(`${clockPrefix}\n\n${userText}`);
+}
+
+async function resolveUserTimeZone(
+  input: Pick<AgentInput, "userTimeZone" | "userId" | "db">
+): Promise<string> {
+  const fromInput = input.userTimeZone?.trim();
+  if (fromInput) return fromInput;
+  const profile = await getProfile(input.db, input.userId);
+  return profile.timezone?.trim() || "UTC";
+}
+
 async function buildMessageBatchForInvoke(
   app: {
     getState: (c: {
@@ -621,7 +638,8 @@ async function buildMessageBatchForInvoke(
     }) => Promise<StateSnapshot>;
   },
   config: { configurable: { thread_id: string }; recursionLimit?: number },
-  input: AgentInput
+  input: AgentInput,
+  clockPrefix: string
 ): Promise<BaseMessage[]> {
   let snapshot;
   try {
@@ -635,7 +653,7 @@ async function buildMessageBatchForInvoke(
     (snapshot.values.messages as BaseMessage[]).length > 0;
 
   if (hasCheckpointMessages) {
-    return [new HumanMessage(input.message)];
+    return [humanMessageForLlm(clockPrefix, input.message)];
   }
 
   const history = await getSessionMessages(input.db, input.sessionId, 30);
@@ -649,7 +667,7 @@ async function buildMessageBatchForInvoke(
   return [
     new SystemMessage(input.systemPrompt),
     ...priorMessages,
-    new HumanMessage(input.message),
+    humanMessageForLlm(clockPrefix, input.message),
   ];
 }
 
@@ -747,7 +765,9 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
   await addMessage(db, sessionId, "user", message);
 
-  const messageBatch = await buildMessageBatchForInvoke(app, config, input);
+  const resolvedTz = await resolveUserTimeZone(input);
+  const clockPrefix = buildClockPrefix(resolvedTz);
+  const messageBatch = await buildMessageBatchForInvoke(app, config, input, clockPrefix);
 
   const finalState = await app.invoke(
     {

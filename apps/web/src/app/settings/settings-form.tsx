@@ -18,6 +18,8 @@ interface Props {
 const TOOL_IDS = [
   "get_user_preferences",
   "list_enabled_tools",
+  "ping",
+  "create_cronjob",
   "github_list_repos",
   "github_list_issues",
   "github_create_issue",

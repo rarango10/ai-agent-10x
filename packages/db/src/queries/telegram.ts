@@ -35,3 +35,16 @@ export async function getUserByTelegramId(
     .single();
   return data as TelegramAccount | null;
 }
+
+export async function getTelegramAccountByUserId(
+  db: DbClient,
+  userId: string
+): Promise<TelegramAccount | null> {
+  const { data, error } = await db
+    .from("telegram_accounts")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as TelegramAccount | null) ?? null;
+}

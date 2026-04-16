@@ -5,6 +5,7 @@ import type { UserToolSetting, UserIntegration } from "@agents/types";
 import { TOOL_CATALOG } from "./catalog";
 import { executeGithubTool } from "./execute-github-tool";
 import { executeBash, isBashToolDisabledByEnv, resolveBashCwd } from "./execute-bash";
+import { executePing } from "./execute-ping";
 import {
   executeEditFile,
   executeReadFile,
@@ -80,6 +81,89 @@ export function buildLangChainTools(ctx: ToolContext) {
           name: "list_enabled_tools",
           description: "Lists all tools the user has currently enabled.",
           schema: z.object({}),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("ping", ctx)) {
+    tools.push(
+      tool(
+        async (input) =>
+          executePing({
+            destination: input.destination,
+            count: input.count ?? undefined,
+          }),
+        {
+          name: "ping",
+          description:
+            "Sends ICMP ping packets to a destination host or IP to verify network connectivity. " +
+            "Returns a summary with packet loss and round-trip time statistics.",
+          schema: z.object({
+            destination: z.string().min(1).describe("Hostname or IP address to ping"),
+            count: z
+              .number()
+              .int()
+              .min(1)
+              .max(20)
+              .optional()
+              .describe("Number of packets (default 4, max 20)"),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("create_cronjob", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          const { createCronJob, getProfile } = await import("@agents/db");
+          const { job_name: jobName, description, expression } = input;
+          try {
+            const profile = await getProfile(ctx.db, ctx.userId);
+            const tz = profile.timezone?.trim() || "UTC";
+            const row = await createCronJob(
+              ctx.db,
+              ctx.userId,
+              jobName,
+              description,
+              expression,
+              tz
+            );
+            return JSON.stringify({
+              ok: true,
+              id: row.id,
+              job_name: row.job_name,
+              expression: row.expression,
+              next_run_at: row.next_run_at,
+              timezone: tz,
+            });
+          } catch (e) {
+            return JSON.stringify({
+              ok: false,
+              error: "cron_create_failed",
+              message: e instanceof Error ? e.message : String(e),
+            });
+          }
+        },
+        {
+          name: "create_cronjob",
+          description:
+            "Creates a scheduled task (cron job) that will run periodically. " +
+            "The task description tells the agent what to do on each execution. " +
+            "Uses standard cron expressions (e.g. '0 9 * * 1-5' = weekdays at 9:00 in the user's timezone).",
+          schema: z.object({
+            job_name: z.string().min(1).describe("Short name for the task"),
+            description: z
+              .string()
+              .min(1)
+              .describe("Instructions for what the agent should do on each run"),
+            expression: z
+              .string()
+              .min(1)
+              .describe("Cron expression: minute hour day-of-month month day-of-week (5 fields)"),
+          }),
         }
       )
     );

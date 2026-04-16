@@ -76,6 +76,19 @@ export interface TelegramAccount {
   linked_at: string;
 }
 
+export interface CronJob {
+  id: string;
+  user_id: string;
+  job_name: string;
+  description: string;
+  expression: string;
+  enabled: boolean;
+  last_executed_at: string | null;
+  next_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ToolDefinition {
   id: string;
   name: string;

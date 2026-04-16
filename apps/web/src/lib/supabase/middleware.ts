@@ -36,7 +36,8 @@ export async function updateSession(request: NextRequest) {
   // Telegram calls the webhook without browser cookies; GitHub OAuth redirects here without guarantee of session refresh timing.
   const isPublicApi =
     pathname.startsWith("/api/telegram/webhook") ||
-    pathname.startsWith("/api/integrations/github/callback");
+    pathname.startsWith("/api/integrations/github/callback") ||
+    pathname.startsWith("/api/cron/execute");
 
   if (!user && !isPublic && !isPublicApi) {
     const url = request.nextUrl.clone();

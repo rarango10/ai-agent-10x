@@ -6,6 +6,10 @@ import {
   getAgentSessionUserId,
 } from "@agents/db";
 import { runAgent, resumeAgent } from "@agents/agent";
+import {
+  answerTelegramCallbackQuery,
+  sendTelegramMessage,
+} from "@/lib/telegram/send-message";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
@@ -29,26 +33,6 @@ interface TelegramUpdate {
   };
 }
 
-async function sendTelegramMessage(
-  chatId: number,
-  text: string,
-  replyMarkup?: Record<string, unknown>
-) {
-  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
-    }),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    console.error("Telegram sendMessage failed:", res.status, body);
-  }
-}
-
 /** Telegram sends "/cmd@BotName args" when the user picks a command from the menu. */
 function parseBotCommand(messageText: string): { command: string; args: string } {
   const trimmed = messageText.trim();
@@ -60,14 +44,6 @@ function parseBotCommand(messageText: string): { command: string; args: string }
   return { command, args: tail };
 }
 
-async function answerCallbackQuery(callbackQueryId: string, text: string) {
-  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ callback_query_id: callbackQueryId, text }),
-  });
-}
-
 async function resumeAgentForTelegramSession(
   db: ReturnType<typeof createServerClient>,
   userId: string,
@@ -76,7 +52,7 @@ async function resumeAgentForTelegramSession(
 ) {
   const { data: profile } = await db
     .from("profiles")
-    .select("agent_system_prompt")
+    .select("agent_system_prompt, timezone")
     .eq("id", userId)
     .single();
 
@@ -97,6 +73,7 @@ async function resumeAgentForTelegramSession(
     userId,
     sessionId,
     systemPrompt: profile?.agent_system_prompt ?? "Eres un asistente útil.",
+    userTimeZone: (profile?.timezone as string) ?? undefined,
     db,
     enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({
       id: t.id as string,
@@ -155,13 +132,13 @@ export async function POST(request: Request) {
 
     if (action === "reject" && toolCallId) {
       if (!linkedUserId) {
-        await answerCallbackQuery(cb.id, "Cuenta no vinculada");
+        await answerTelegramCallbackQuery(cb.id, "Cuenta no vinculada");
         return NextResponse.json({ ok: true });
       }
       const tc = await getToolCallById(db, toolCallId);
       const sessionUid = tc ? await getAgentSessionUserId(db, tc.session_id) : null;
       if (tc?.status === "pending_confirmation" && sessionUid === linkedUserId) {
-        await answerCallbackQuery(cb.id, "Rechazado");
+        await answerTelegramCallbackQuery(cb.id, "Rechazado");
         try {
           const result = await resumeAgentForTelegramSession(
             db,
@@ -179,30 +156,30 @@ export async function POST(request: Request) {
           );
         }
       } else {
-        await answerCallbackQuery(cb.id, "No aplicable");
+        await answerTelegramCallbackQuery(cb.id, "No aplicable");
       }
       return NextResponse.json({ ok: true });
     }
 
     if (action === "approve" && toolCallId) {
       if (!linkedUserId) {
-        await answerCallbackQuery(cb.id, "Cuenta no vinculada");
+        await answerTelegramCallbackQuery(cb.id, "Cuenta no vinculada");
         return NextResponse.json({ ok: true });
       }
       const tc = await getToolCallById(db, toolCallId);
       if (!tc || tc.status !== "pending_confirmation") {
-        await answerCallbackQuery(cb.id, "Expirado o inválido");
+        await answerTelegramCallbackQuery(cb.id, "Expirado o inválido");
         return NextResponse.json({ ok: true });
       }
       const sessionUid = await getAgentSessionUserId(db, tc.session_id);
       if (sessionUid !== linkedUserId) {
-        await answerCallbackQuery(cb.id, "No autorizado");
+        await answerTelegramCallbackQuery(cb.id, "No autorizado");
         return NextResponse.json({ ok: true });
       }
 
       const token = await getDecryptedGithubToken(db, linkedUserId);
       if (!token) {
-        await answerCallbackQuery(cb.id, "Sin GitHub");
+        await answerTelegramCallbackQuery(cb.id, "Sin GitHub");
         await sendTelegramMessage(
           cb.message.chat.id,
           "No hay conexión con GitHub o el token no es válido. Conecta GitHub en Ajustes en la web."
@@ -210,7 +187,7 @@ export async function POST(request: Request) {
         return NextResponse.json({ ok: true });
       }
 
-      await answerCallbackQuery(cb.id, "Aprobado");
+      await answerTelegramCallbackQuery(cb.id, "Aprobado");
       try {
         const result = await resumeAgentForTelegramSession(
           db,
@@ -241,7 +218,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true });
     }
 
-    await answerCallbackQuery(cb.id, "OK");
+    await answerTelegramCallbackQuery(cb.id, "OK");
     return NextResponse.json({ ok: true });
   }
 
@@ -359,7 +336,7 @@ export async function POST(request: Request) {
   // Load profile, tools, integrations
   const { data: profile } = await db
     .from("profiles")
-    .select("agent_system_prompt")
+    .select("agent_system_prompt, timezone")
     .eq("id", userId)
     .single();
 
@@ -382,6 +359,7 @@ export async function POST(request: Request) {
       userId,
       sessionId: session.id,
       systemPrompt: profile?.agent_system_prompt ?? "Eres un asistente útil.",
+      userTimeZone: (profile?.timezone as string) ?? undefined,
       db,
       enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({
         id: t.id as string,

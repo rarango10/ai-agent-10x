@@ -54,7 +54,7 @@ export async function POST(
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("agent_system_prompt")
+    .select("agent_system_prompt, timezone")
     .eq("id", user.id)
     .single();
 
@@ -76,6 +76,7 @@ export async function POST(
       userId: user.id,
       sessionId: tc.session_id,
       systemPrompt: profile?.agent_system_prompt ?? "Eres un asistente útil.",
+      userTimeZone: (profile?.timezone as string) ?? undefined,
       db,
       enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({
         id: t.id as string,

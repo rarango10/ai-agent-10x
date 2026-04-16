@@ -16,6 +16,52 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     parameters_schema: { type: "object", properties: {}, required: [] },
   },
   {
+    id: "ping",
+    name: "ping",
+    description:
+      "Sends ICMP ping packets to a destination host or IP to verify network connectivity. " +
+      "Returns a summary with packet loss and round-trip time statistics.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        destination: {
+          type: "string",
+          description: "Hostname or IP address to ping",
+        },
+        count: {
+          type: "number",
+          description: "Number of ping packets to send (default 4, max 20)",
+        },
+      },
+      required: ["destination"],
+    },
+  },
+  {
+    id: "create_cronjob",
+    name: "create_cronjob",
+    description:
+      "Creates a scheduled task (cron job) that will run periodically. " +
+      "The task description tells the agent what to do on each execution. " +
+      "Uses standard cron expressions (e.g. '0 9 * * 1-5' = weekdays at 9:00 in the user's timezone).",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        job_name: { type: "string", description: "Short name for the task" },
+        description: {
+          type: "string",
+          description: "Instructions for what the agent should do on each run",
+        },
+        expression: {
+          type: "string",
+          description: "Cron expression: minute hour day-of-month month day-of-week (5 fields)",
+        },
+      },
+      required: ["job_name", "description", "expression"],
+    },
+  },
+  {
     id: "github_list_repos",
     name: "github_list_repos",
     description: "Lists the user's GitHub repositories.",

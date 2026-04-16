@@ -52,6 +52,11 @@ Monorepo con **Next.js**, **Supabase**, **LangGraph** y **OpenRouter**. Incluye 
 
 Si algo falla (por ejemplo, el trigger `on_auth_user_created` en un proyecto ya modificado), revisa el mensaje de error; en la mayoría de proyectos nuevos el script aplica de una vez.
 
+5. Si el proyecto aún no las tiene, aplica también (en orden) los scripts en:
+
+   - `packages/db/supabase/migrations/00002_tool_calls_lc_tool_call_id.sql`
+   - `packages/db/supabase/migrations/00003_cronjobs.sql`
+
 ---
 
 ## Paso 4 — Configurar autenticación (email)
@@ -92,6 +97,7 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `OAUTH_ENCRYPTION_KEY` | Clave **AES-256** para cifrar tokens OAuth en base de datos. Debe ser **64 caracteres hexadecimales** (32 bytes), p. ej. salida de `openssl rand -hex 32` |
    | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | OAuth App de GitHub (ver abajo) |
    | `NEXT_PUBLIC_APP_URL` | URL base pública de la app (sin `/` final), p. ej. `http://localhost:3000` — usada para el callback de GitHub |
+   | `CRON_SECRET` | *(Opcional)* Secreto compartido para `POST /api/cron/execute` (cabecera `x-cron-secret`). Necesario si usas tareas programadas con Supabase `pg_cron`, Vercel Cron u otro programador |
 
 Referencia de nombres: [.env.example](.env.example).
 
@@ -156,6 +162,74 @@ Telegram **exige HTTPS** para webhooks. En local:
 6. En Telegram, envía al bot: `/link TU_CODIGO` (el código que te muestra la web).
 
 Después de vincular, los mensajes al bot usan el mismo pipeline que el chat web.
+
+---
+
+## Tareas programadas (cron) — opcional
+
+El agente puede crear trabajos recurrentes con la herramienta `create_cronjob` (actívala en onboarding o en **Ajustes**). Las expresiones usan **5 campos** (minuto hora día mes día-semana), interpretadas en la **zona horaria del perfil** del usuario.
+
+1. Aplica la migración `00003_cronjobs.sql` (ver Paso 3).
+2. Define `CRON_SECRET` en `apps/web/.env.local` en desarrollo y el **mismo valor** en las variables de entorno de tu despliegue (p. ej. Vercel). Sin eso `/api/cron/execute` responde 503 o 401.
+3. Elige cómo disparar cada minuto el endpoint (abajo, **opción A** recomendada si tu base ya está en Supabase).
+
+4. **Telegram**: por defecto el resultado de cada ejecución se envía al chat vinculado (`[Tarea programada] {nombre} …`). Si el usuario no tiene Telegram vinculado, el job se ejecuta igual pero solo verás avisos en los logs del servidor.
+
+### Opción A — Supabase (`pg_cron` + `pg_net`)
+
+La app Next sigue desplegada donde la tengas (Vercel, etc.); solo el **reloj** vive en Postgres.
+
+1. En Supabase: **Database → Extensions** activa **`pg_cron`** y **`pg_net`** (o ejecútalo en SQL Editor si tu proyecto lo permite):
+
+   ```sql
+   create extension if not exists pg_cron with schema extensions;
+   create extension if not exists pg_net with schema extensions;
+   ```
+
+   Si el dashboard no deja crear la extensión, revisa la documentación actual de tu plan o pide habilitarlas al soporte.
+
+2. Sustituye en el siguiente bloque:
+   - `https://TU_DOMINIO_PUBLICO` — URL HTTPS donde corre **Next** (sin barra final), p. ej. `https://mi-app.vercel.app`
+   - `TU_CRON_SECRET` — el **mismo** string que `CRON_SECRET` en el servidor de la app
+
+3. En **SQL Editor**, ejecuta **una vez**:
+
+   ```sql
+   select cron.schedule(
+     'execute-agent-cronjobs',
+     '* * * * *',
+     $$
+     select net.http_post(
+       url := 'https://TU_DOMINIO_PUBLICO/api/cron/execute',
+       headers := jsonb_build_object(
+         'Content-Type', 'application/json',
+         'x-cron-secret', 'TU_CRON_SECRET'
+       ),
+       body := '{}'::jsonb
+     );
+     $$
+   );
+   ```
+
+4. Comprueba que el job existe: `select * from cron.job;`   Para quitarlo y volver a crearlo: anota el `jobid` y ejecuta `select cron.unschedule(<jobid>);`.
+
+5. **Seguridad**: el secreto queda en la definición del job en la base de datos; no lo compartas ni subas este SQL a un repo público con valores reales. Si cambias `CRON_SECRET` en la app, actualiza el job (unschedule + `schedule` de nuevo con el nuevo valor).
+
+6. Si no ves peticiones llegar a tu app, revisa en Supabase **Database → Logs** o la cola de `pg_net` según la versión del proyecto; la URL del `net.http_post` debe ser alcanzable desde internet (no uses `http://localhost` ahí).
+
+### App en local + Supabase en la nube (ngrok)
+
+Es un escenario válido: **Postgres y `pg_cron` están en Supabase**; **Next corre en tu máquina** y solo necesitas una URL HTTPS pública hacia tu puerto local.
+
+1. Arranca la app: `npm run dev` (deja el proceso en marcha mientras pruebes los cron).
+2. En otra terminal: `ngrok http 3000` (o el puerto que use Next).
+3. Copia la URL HTTPS que te da ngrok, p. ej. `https://abc123.ngrok-free.app` **sin barra final**.
+4. En el `cron.schedule` de arriba, usa exactamente esa base como `https://TU_DOMINIO_PUBLICO` (sigue siendo `.../api/cron/execute`).
+5. **`CRON_SECRET`** en `apps/web/.env.local` debe coincidir con el valor que pusiste en la cabecera `x-cron-secret` del job en Supabase.
+
+**Importante:** con ngrok gratuito la URL suele **cambiar** cada vez que reinicias el túnel. Entonces debes **volver a programar el job** (`cron.unschedule` del id anterior y otro `cron.schedule` con la URL nueva), o usar un **dominio reservado** en ngrok para que la URL sea estable.
+
+Mientras desarrollas en local, cualquier petición que Supabase dispare a ngrok solo llegará si **tu PC está encendida**, ngrok activo y `npm run dev` corriendo.
 
 ---
 

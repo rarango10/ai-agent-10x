@@ -23,6 +23,22 @@ const AVAILABLE_TOOLS = [
     requiresIntegration: null,
   },
   {
+    id: "ping",
+    name: "Ping (conectividad)",
+    description:
+      "Envía paquetes ICMP a un host o IP para comprobar conectividad de red (resumen con pérdida y RTT).",
+    risk: "low" as const,
+    requiresIntegration: null,
+  },
+  {
+    id: "create_cronjob",
+    name: "Tareas programadas",
+    description:
+      "Crea tareas recurrentes (cron) que el agente ejecutará según un calendario; los resultados se envían por Telegram si está vinculado.",
+    risk: "low" as const,
+    requiresIntegration: null,
+  },
+  {
     id: "github_list_repos",
     name: "GitHub: listar repos",
     description: "Lista tus repositorios de GitHub.",
