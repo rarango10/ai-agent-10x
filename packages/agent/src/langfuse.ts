@@ -1,10 +1,12 @@
 import { CallbackHandler } from "@langfuse/langchain";
+import type { LangfuseSpanProcessor as SpanProcessorType } from "@langfuse/otel";
 
 const LANGFUSE_ENABLED =
   !!process.env.LANGFUSE_SECRET_KEY &&
   !!process.env.LANGFUSE_PUBLIC_KEY;
 
 let otelInitialized = false;
+let spanProcessor: SpanProcessorType | null = null;
 
 /**
  * Starts the OpenTelemetry SDK with the Langfuse span processor.
@@ -19,8 +21,12 @@ async function ensureOtelSdk(): Promise<void> {
     const { NodeSDK } = await import("@opentelemetry/sdk-node");
     const { LangfuseSpanProcessor } = await import("@langfuse/otel");
 
+    spanProcessor = new LangfuseSpanProcessor({
+      exportMode: "immediate",
+    });
+
     const sdk = new NodeSDK({
-      spanProcessors: [new LangfuseSpanProcessor()],
+      spanProcessors: [spanProcessor],
     });
     sdk.start();
   } catch (err) {
@@ -53,15 +59,16 @@ export async function createLangfuseHandler(
 }
 
 /**
- * Flushes pending Langfuse events. Call after each graph invocation
- * to guarantee delivery in short-lived / serverless environments.
+ * Flushes pending Langfuse spans via the OTel SpanProcessor.
+ * Call after each graph invocation to guarantee delivery in
+ * short-lived / serverless environments.
  */
 export async function flushLangfuse(
-  handler: CallbackHandler | null
+  _handler: CallbackHandler | null
 ): Promise<void> {
-  if (!handler) return;
+  if (!_handler || !spanProcessor) return;
   try {
-    await handler.flushAsync();
+    await spanProcessor.forceFlush();
   } catch {
     /* best-effort: tracing failure must never break the agent */
   }
