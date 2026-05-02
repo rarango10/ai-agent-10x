@@ -26,6 +26,7 @@ import {
   ensureLangGraphCheckpointerSetup,
   getLangGraphCheckpointer,
 } from "./checkpointer";
+import { createLangfuseHandler, flushLangfuse } from "./langfuse";
 
 const INTERRUPT = "__interrupt__" as const;
 
@@ -758,9 +759,12 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     toolCallNames,
   });
 
+  const langfuseHandler = await createLangfuseHandler({ sessionId, userId });
+
   const config = {
     configurable: { thread_id: sessionId },
     recursionLimit: LANGGRAPH_RECURSION_LIMIT,
+    ...(langfuseHandler ? { callbacks: [langfuseHandler] } : {}),
   };
 
   await addMessage(db, sessionId, "user", message);
@@ -769,42 +773,46 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   const clockPrefix = buildClockPrefix(resolvedTz);
   const messageBatch = await buildMessageBatchForInvoke(app, config, input, clockPrefix);
 
-  const finalState = await app.invoke(
-    {
-      messages: messageBatch,
-      sessionId,
-      userId,
-      systemPrompt,
-    },
-    config
-  );
-
-  const snap = await app.getState(config);
-  const out = outputFromFinalState(finalState, toolCallNames, snap);
-
-  if (out.pendingConfirmation) {
-    await addMessage(db, sessionId, "assistant", out.pendingConfirmation.message, {
-      structured_payload: {
-        kind: "hitl_pending",
-        toolCallId: out.pendingConfirmation.toolCallId,
-        toolName: out.pendingConfirmation.toolName,
-        message: out.pendingConfirmation.message,
-        lcToolCallId: out.pendingConfirmation.lcToolCallId,
+  try {
+    const finalState = await app.invoke(
+      {
+        messages: messageBatch,
+        sessionId,
+        userId,
+        systemPrompt,
       },
-    });
-    return {
-      response: "",
-      toolCalls: out.toolCalls,
-      pendingConfirmation: out.pendingConfirmation,
-      interrupted: true,
-    };
-  }
+      config
+    );
 
-  await addMessage(db, sessionId, "assistant", out.response);
-  return {
-    response: out.response,
-    toolCalls: out.toolCalls,
-  };
+    const snap = await app.getState(config);
+    const out = outputFromFinalState(finalState, toolCallNames, snap);
+
+    if (out.pendingConfirmation) {
+      await addMessage(db, sessionId, "assistant", out.pendingConfirmation.message, {
+        structured_payload: {
+          kind: "hitl_pending",
+          toolCallId: out.pendingConfirmation.toolCallId,
+          toolName: out.pendingConfirmation.toolName,
+          message: out.pendingConfirmation.message,
+          lcToolCallId: out.pendingConfirmation.lcToolCallId,
+        },
+      });
+      return {
+        response: "",
+        toolCalls: out.toolCalls,
+        pendingConfirmation: out.pendingConfirmation,
+        interrupted: true,
+      };
+    }
+
+    await addMessage(db, sessionId, "assistant", out.response);
+    return {
+      response: out.response,
+      toolCalls: out.toolCalls,
+    };
+  } finally {
+    await flushLangfuse(langfuseHandler);
+  }
 }
 
 export async function resumeAgent(input: ResumeAgentInput): Promise<AgentOutput> {
@@ -841,37 +849,44 @@ export async function resumeAgent(input: ResumeAgentInput): Promise<AgentOutput>
     toolCallNames,
   });
 
+  const langfuseHandler = await createLangfuseHandler({ sessionId, userId });
+
   const config = {
     configurable: { thread_id: sessionId },
     recursionLimit: LANGGRAPH_RECURSION_LIMIT,
+    ...(langfuseHandler ? { callbacks: [langfuseHandler] } : {}),
   };
 
-  const finalState = await app.invoke(new Command({ resume }), config);
+  try {
+    const finalState = await app.invoke(new Command({ resume }), config);
 
-  const snap = await app.getState(config);
-  const out = outputFromFinalState(finalState, toolCallNames, snap);
+    const snap = await app.getState(config);
+    const out = outputFromFinalState(finalState, toolCallNames, snap);
 
-  if (out.pendingConfirmation) {
-    await addMessage(db, sessionId, "assistant", out.pendingConfirmation.message, {
-      structured_payload: {
-        kind: "hitl_pending",
-        toolCallId: out.pendingConfirmation.toolCallId,
-        toolName: out.pendingConfirmation.toolName,
-        message: out.pendingConfirmation.message,
-        lcToolCallId: out.pendingConfirmation.lcToolCallId,
-      },
-    });
+    if (out.pendingConfirmation) {
+      await addMessage(db, sessionId, "assistant", out.pendingConfirmation.message, {
+        structured_payload: {
+          kind: "hitl_pending",
+          toolCallId: out.pendingConfirmation.toolCallId,
+          toolName: out.pendingConfirmation.toolName,
+          message: out.pendingConfirmation.message,
+          lcToolCallId: out.pendingConfirmation.lcToolCallId,
+        },
+      });
+      return {
+        response: "",
+        toolCalls: out.toolCalls,
+        pendingConfirmation: out.pendingConfirmation,
+        interrupted: true,
+      };
+    }
+
+    await addMessage(db, sessionId, "assistant", out.response);
     return {
-      response: "",
+      response: out.response,
       toolCalls: out.toolCalls,
-      pendingConfirmation: out.pendingConfirmation,
-      interrupted: true,
     };
+  } finally {
+    await flushLangfuse(langfuseHandler);
   }
-
-  await addMessage(db, sessionId, "assistant", out.response);
-  return {
-    response: out.response,
-    toolCalls: out.toolCalls,
-  };
 }

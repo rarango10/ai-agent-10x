@@ -14,6 +14,10 @@
     "@langchain/langgraph": "^0.2",
     "@langchain/langgraph-checkpoint-postgres": "^0.0.5",
     "@langchain/openai": "^0.4",
+    "@langfuse/core": "^5.2.0",
+    "@langfuse/langchain": "^5.2.0",
+    "@langfuse/otel": "^5.2.0",
+    "@opentelemetry/sdk-node": "^0.216.0",
     "pg": "^8.20.0",
     "zod": "^3"
   },
