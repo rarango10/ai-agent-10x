@@ -9,6 +9,7 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
+    "start": "npm run start --workspace=apps/web",
     "lint": "turbo run lint",
     "type-check": "turbo run type-check"
   },
