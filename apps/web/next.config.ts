@@ -1,3 +1,4 @@
+/* v0.2.0 – Langfuse OTel tracing */
 import type { NextConfig } from "next";
 
 const extraAllowedDevOrigins =
